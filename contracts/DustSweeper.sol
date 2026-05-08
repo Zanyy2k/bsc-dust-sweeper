@@ -95,13 +95,17 @@ contract DustSweeper is ReentrancyGuard {
 
         uint256 amountOutMin = expectedOut * (10000 - slippageBps) / 10000;
 
+        uint256 balanceBefore = erc20.balanceOf(address(this));
         if (!erc20.transferFrom(user, address(this), amount)) return;
-        erc20.approve(address(router), amount);
+        uint256 actualAmount = erc20.balanceOf(address(this)) - balanceBefore; // handles fee-on-transfer
+        if (actualAmount == 0) return;
+
+        erc20.approve(address(router), actualAmount);
 
         uint256 bnbBefore = address(this).balance;
 
         try router.swapExactTokensForETHSupportingFeeOnTransferTokens(
-            amount,
+            actualAmount,
             amountOutMin,
             path,
             address(this),
@@ -124,7 +128,9 @@ contract DustSweeper is ReentrancyGuard {
 
             emit Swept(user, token, amount, userAmount, fee);
         } catch {
-            erc20.transfer(user, amount);
+            // return whatever we actually hold (not original amount)
+            uint256 remaining = erc20.balanceOf(address(this)) - balanceBefore;
+            if (remaining > 0) erc20.transfer(user, remaining);
         }
     }
 
@@ -144,7 +150,18 @@ contract DustSweeper is ReentrancyGuard {
     }
 
     function setFeeRecipient(address _feeRecipient) external onlyOwner {
+        require(_feeRecipient != address(0), "zero address");
         feeRecipient = _feeRecipient;
+    }
+
+    function rescueBNB() external onlyOwner {
+        (bool ok, ) = owner.call{value: address(this).balance}("");
+        require(ok, "transfer failed");
+    }
+
+    function rescueToken(address token) external onlyOwner {
+        uint256 bal = IERC20(token).balanceOf(address(this));
+        if (bal > 0) IERC20(token).transfer(owner, bal);
     }
 
     function setFeeBps(uint256 _feeBps) external onlyOwner {
