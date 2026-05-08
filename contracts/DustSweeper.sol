@@ -100,6 +100,14 @@ contract DustSweeper is ReentrancyGuard {
         uint256 actualAmount = erc20.balanceOf(address(this)) - balanceBefore; // handles fee-on-transfer
         if (actualAmount == 0) return;
 
+        // Recalculate amountOutMin using actualAmount (fee-on-transfer tokens arrive with less)
+        try router.getAmountsOut(actualAmount, path) returns (uint[] memory actualAmounts) {
+            amountOutMin = actualAmounts[1] * (10000 - slippageBps) / 10000;
+        } catch {
+            erc20.transfer(user, actualAmount);
+            return;
+        }
+
         erc20.approve(address(router), actualAmount);
 
         uint256 bnbBefore = address(this).balance;
@@ -126,9 +134,10 @@ contract DustSweeper is ReentrancyGuard {
                 require(s2, "user transfer failed");
             }
 
-            emit Swept(user, token, amount, userAmount, fee);
+            emit Swept(user, token, actualAmount, userAmount, fee);
         } catch {
-            // return whatever we actually hold (not original amount)
+            // clear router approval and return tokens to user
+            erc20.approve(address(router), 0);
             uint256 remaining = erc20.balanceOf(address(this)) - balanceBefore;
             if (remaining > 0) erc20.transfer(user, remaining);
         }
