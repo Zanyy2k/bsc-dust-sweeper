@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+
 interface IERC20 {
     function transferFrom(address from, address to, uint256 amount) external returns (bool);
     function transfer(address to, uint256 amount) external returns (bool);
@@ -17,15 +19,21 @@ interface IPancakeRouter {
         address to,
         uint deadline
     ) external;
+    function getAmountsOut(uint amountIn, address[] calldata path) external view returns (uint[] memory amounts);
     function WETH() external pure returns (address);
 }
 
-contract DustSweeper {
+contract DustSweeper is ReentrancyGuard {
     address public owner;
     address public feeRecipient;
-    uint256 public feeBps; // 1500 = 15%
+    uint256 public feeBps;         // e.g. 1500 = 15%
+    uint256 public slippageBps;    // e.g. 500 = 5% max slippage
+    uint256 public constant MAX_TOKENS_PER_SWEEP = 20;
+
     IPancakeRouter public router;
     address public wbnb;
+
+    mapping(address => bool) public whitelistedTokens;
 
     event Swept(
         address indexed user,
@@ -34,6 +42,7 @@ contract DustSweeper {
         uint256 userReceived,
         uint256 feeAmount
     );
+    event TokenWhitelisted(address indexed token, bool status);
 
     modifier onlyOwner() {
         require(msg.sender == owner, "not owner");
@@ -46,12 +55,16 @@ contract DustSweeper {
         wbnb = router.WETH();
         feeRecipient = _feeRecipient;
         feeBps = _feeBps;
+        slippageBps = 500; // 5% default slippage tolerance
     }
 
-    // Bot calls this to sweep one or more dust tokens for a user
-    function sweep(address user, address[] calldata tokens) external {
+    // Bot calls this to sweep dust tokens for a user
+    function sweep(address user, address[] calldata tokens) external nonReentrant {
+        require(tokens.length <= MAX_TOKENS_PER_SWEEP, "too many tokens");
         for (uint256 i = 0; i < tokens.length; i++) {
-            _sweepToken(user, tokens[i]);
+            if (whitelistedTokens[tokens[i]]) {
+                _sweepToken(user, tokens[i]);
+            }
         }
     }
 
@@ -65,19 +78,29 @@ contract DustSweeper {
         uint256 amount = allowance < balance ? allowance : balance;
         if (amount == 0) return;
 
-        if (!erc20.transferFrom(user, address(this), amount)) return;
-
-        erc20.approve(address(router), amount);
-
+        // Calculate minimum BNB output with slippage protection
         address[] memory path = new address[](2);
         path[0] = token;
         path[1] = wbnb;
+
+        uint256 expectedOut;
+        try router.getAmountsOut(amount, path) returns (uint[] memory amounts) {
+            expectedOut = amounts[1];
+        } catch {
+            return; // no liquidity, skip
+        }
+        if (expectedOut == 0) return;
+
+        uint256 amountOutMin = expectedOut * (10000 - slippageBps) / 10000;
+
+        if (!erc20.transferFrom(user, address(this), amount)) return;
+        erc20.approve(address(router), amount);
 
         uint256 bnbBefore = address(this).balance;
 
         try router.swapExactTokensForETHSupportingFeeOnTransferTokens(
             amount,
-            0,
+            amountOutMin,
             path,
             address(this),
             block.timestamp + 300
@@ -99,8 +122,20 @@ contract DustSweeper {
 
             emit Swept(user, token, amount, userAmount, fee);
         } catch {
-            // swap failed (no liquidity etc.), return tokens to user
             erc20.transfer(user, amount);
+        }
+    }
+
+    // Owner adds/removes tokens from whitelist
+    function setTokenWhitelist(address token, bool status) external onlyOwner {
+        whitelistedTokens[token] = status;
+        emit TokenWhitelisted(token, status);
+    }
+
+    function setTokenWhitelistBatch(address[] calldata tokens, bool status) external onlyOwner {
+        for (uint256 i = 0; i < tokens.length; i++) {
+            whitelistedTokens[tokens[i]] = status;
+            emit TokenWhitelisted(tokens[i], status);
         }
     }
 
@@ -111,6 +146,11 @@ contract DustSweeper {
     function setFeeBps(uint256 _feeBps) external onlyOwner {
         require(_feeBps <= 3000, "max 30%");
         feeBps = _feeBps;
+    }
+
+    function setSlippageBps(uint256 _slippageBps) external onlyOwner {
+        require(_slippageBps <= 2000, "max 20%");
+        slippageBps = _slippageBps;
     }
 
     receive() external payable {}
