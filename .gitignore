@@ -1,0 +1,23 @@
+# Environment
+.env
+.env.local
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+bot/venv/
+bot/.venv/
+
+# Node / Frontend
+frontend/node_modules/
+frontend/.next/
+frontend/dist/
+
+# Hardhat / Foundry
+contracts/artifacts/
+contracts/cache/
+contracts/out/
+
+# OS
+.DS_Store
