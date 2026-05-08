@@ -50,12 +50,14 @@ contract DustSweeper is ReentrancyGuard {
     }
 
     constructor(address _router, address _feeRecipient, uint256 _feeBps) {
+        require(_router != address(0) && _feeRecipient != address(0), "zero address");
+        require(_feeBps <= 3000, "max 30%");
         owner = msg.sender;
         router = IPancakeRouter(_router);
         wbnb = router.WETH();
         feeRecipient = _feeRecipient;
         feeBps = _feeBps;
-        slippageBps = 500; // 5% default slippage tolerance
+        slippageBps = 500;
     }
 
     // Bot calls this to sweep dust tokens for a user
@@ -128,12 +130,14 @@ contract DustSweeper is ReentrancyGuard {
 
     // Owner adds/removes tokens from whitelist
     function setTokenWhitelist(address token, bool status) external onlyOwner {
+        require(token != address(0) && token != wbnb, "invalid token");
         whitelistedTokens[token] = status;
         emit TokenWhitelisted(token, status);
     }
 
     function setTokenWhitelistBatch(address[] calldata tokens, bool status) external onlyOwner {
         for (uint256 i = 0; i < tokens.length; i++) {
+            require(tokens[i] != address(0) && tokens[i] != wbnb, "invalid token");
             whitelistedTokens[tokens[i]] = status;
             emit TokenWhitelisted(tokens[i], status);
         }
